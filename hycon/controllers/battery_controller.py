@@ -298,3 +298,123 @@ class BatteryPriceSOCController(ControllerBase):
         power_setpoint = np.clip(power_setpoint, power_limit_lower, power_limit_upper)
 
         return {self.cname: {"power_setpoint": power_setpoint}}
+
+
+
+class BatteryOneCycleController(ControllerBase):
+    """
+    Controller designed to cycle once per day.
+
+    More details to come...
+    """
+
+    def __init__(self, interface, cname, controller_parameters={}, verbose=True):
+        """
+        Instantiate BatteryPriceSOCController.
+
+        Args:
+            interface (object): Interface object for communicating with simulator.
+            cname (str): Name of controller, which should match the name of the corresponding
+                plant component.
+            controller_parameters (dict): Dictionary of controller parameters high_soc and low_soc.
+                See set_controller_parameters method for more details.
+            verbose (bool): If True, print debug information.
+        """
+        super().__init__(interface, cname, verbose)
+
+        self.check_controller_parameters(controller_parameters)
+        self.set_controller_parameters(**controller_parameters)
+
+        self.rated_power_charging = self.plant_parameters[self.cname]["charge_rate"]
+        self.rated_power_discharging = self.plant_parameters[self.cname]["discharge_rate"]
+
+        # Save the duration rounded to nearest hour
+        self.duration = round(
+            self.plant_parameters[self.cname]["energy_capacity"]
+            / self.plant_parameters[self.cname]["power_capacity"]
+        )
+
+        # Raise if duration makes this controller implausible
+        if self.duration >= 12:
+            raise ValueError(
+                f"Battery duration is {self.duration} hours, which is not "
+                "supported by BatteryPriceSOCController."
+                " This controller is only intended for durations shorter than 12 hours."
+            )
+
+        if self.duration < 1:
+            raise ValueError(
+                f"Battery duration is {self.duration} hours, which is not "
+                "supported by BatteryPriceSOCController."
+                " This controller is only intended for durations of at least 1 hour."
+            )
+
+    def set_controller_parameters(
+        self,
+        high_soc=1.0,
+        low_soc=0.0,
+    ):
+        """
+        Set parameters for BatteryPriceSOCController.
+
+        high_soc is the SOC threshold above which the battery will only charge if the price is below
+        the lowest (hourly) DA price of the day.  Defaults to 1.0.
+
+        low_soc is the SOC threshold below which the battery will only discharge if the price is
+        above the highest (hourly) DA price of the day.  Defaults to 0.2.
+
+        high_soc defaults to 1.0 (effectively disabled) as experience suggests waiting for
+        very low prices is not worthwhile. low_soc defaults to 0.2 as experience suggests waiting
+        for very high prices is worthwhile.
+
+        Args:
+            high_soc (float): High SOC threshold (0 to 1).  Defaults to 1.0.
+            low_soc (float): Low SOC threshold (0 to 1).  Defaults to 0.2.
+        """
+        self.high_soc = high_soc
+        self.low_soc = low_soc
+
+    def compute_controls(self, measurements_dict):
+        day_ahead_lmps = np.array(measurements_dict["DA_LMP_24hours"])
+        sorted_day_ahead_lmps = np.sort(day_ahead_lmps)
+        real_time_lmp = measurements_dict["RT_LMP"]
+
+        # Extract limits
+        bottom_d = sorted_day_ahead_lmps[self.duration - 1]
+        top_d = sorted_day_ahead_lmps[-self.duration]
+        bottom_1 = sorted_day_ahead_lmps[0]
+        top_1 = sorted_day_ahead_lmps[-1]
+
+        # Access the state of charge and LMP in real-time
+        soc = measurements_dict[self.cname]["state_of_charge"]
+
+        # Note that the convention is followed where charging is negative power
+        # This matches what is in place in the hercules/hybrid_plant level and
+        # will be inverted before passing into the battery modules
+        if real_time_lmp > top_1:
+            power_setpoint = self.rated_power_discharging
+        elif (real_time_lmp > top_d) & (soc > self.low_soc):
+            power_setpoint = self.rated_power_discharging
+        elif real_time_lmp < bottom_1:
+            power_setpoint = -self.rated_power_charging
+        elif (real_time_lmp < bottom_d) & (soc < self.high_soc):
+            power_setpoint = -self.rated_power_charging
+        else:
+            power_setpoint = 0.0
+
+        # Limit the power_setpoint by the SOC
+        if power_setpoint > 0:  # Trying to discharge
+            if soc <= self.plant_parameters[self.cname]["state_of_charge_min"]:  # Fully depleted
+                power_setpoint = 0.0
+
+        # Other way
+        if power_setpoint < 0:  # Trying to charge
+            if soc >= self.plant_parameters[self.cname]["state_of_charge_max"]:  # Fully charged
+                power_setpoint = 0.0
+
+        # Apply limitations based on super controller
+        power_limit_lower = measurements_dict[self.cname].get("power_limit_lower", -np.inf)
+        power_limit_upper = measurements_dict[self.cname].get("power_limit_upper", np.inf)
+        power_setpoint = np.clip(power_setpoint, power_limit_lower, power_limit_upper)
+
+        return {self.cname: {"power_setpoint": power_setpoint}}
