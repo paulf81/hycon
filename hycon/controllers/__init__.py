@@ -2,6 +2,7 @@ from hycon.controllers.battery_controller import (
     BatteryController,
     BatteryPassthroughController,
     BatteryPriceSOCController,
+    BatterySingleCycleController,
 )
 from hycon.controllers.hybrid_supervisory_controller import (
     HybridSupervisoryControllerGeneric,
