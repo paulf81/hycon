@@ -301,7 +301,7 @@ class BatteryPriceSOCController(ControllerBase):
 
 
 
-class BatteryOneCycleController(ControllerBase):
+class BatterySingleCycleController(ControllerBase):
     """
     Controller designed to cycle once per day.
 
