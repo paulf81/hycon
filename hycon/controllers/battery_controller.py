@@ -1,6 +1,7 @@
 import numpy as np
 
 from hycon.controllers.controller_base import ControllerBase
+import pandas as pd
 
 
 class BatteryController(ControllerBase):
@@ -81,10 +82,14 @@ class BatteryController(ControllerBase):
         Returns:
             float: Clipped reference power.
         """
-        clip_fraction = np.interp(soc, self.clipping_thresholds, [0, 1, 1, 0], left=0, right=0)
+        clip_fraction = np.interp(
+            soc, self.clipping_thresholds, [0, 1, 1, 0], left=0, right=0
+        )
 
         r_charge = clip_fraction * self.plant_parameters[self.cname]["charge_rate"]
-        r_discharge = clip_fraction * self.plant_parameters[self.cname]["discharge_rate"]
+        r_discharge = (
+            clip_fraction * self.plant_parameters[self.cname]["discharge_rate"]
+        )
 
         return np.clip(reference_power, -r_discharge, r_charge)
 
@@ -95,8 +100,12 @@ class BatteryController(ControllerBase):
         reference_power = measurements_dict[self.cname]["power_reference"]
         current_power = measurements_dict[self.cname]["power"]
         soc = measurements_dict[self.cname]["state_of_charge"]
-        power_limit_lower = measurements_dict[self.cname].get("power_limit_lower", -np.inf)
-        power_limit_upper = measurements_dict[self.cname].get("power_limit_upper", np.inf)
+        power_limit_lower = measurements_dict[self.cname].get(
+            "power_limit_lower", -np.inf
+        )
+        power_limit_upper = measurements_dict[self.cname].get(
+            "power_limit_upper", np.inf
+        )
 
         # Clip according to upper and lower limits
         reference_power = np.clip(reference_power, power_limit_lower, power_limit_upper)
@@ -206,7 +215,9 @@ class BatteryPriceSOCController(ControllerBase):
         self.set_controller_parameters(**controller_parameters)
 
         self.rated_power_charging = self.plant_parameters[self.cname]["charge_rate"]
-        self.rated_power_discharging = self.plant_parameters[self.cname]["discharge_rate"]
+        self.rated_power_discharging = self.plant_parameters[self.cname][
+            "discharge_rate"
+        ]
 
         # Save the duration rounded to nearest hour
         self.duration = round(
@@ -231,28 +242,37 @@ class BatteryPriceSOCController(ControllerBase):
 
     def set_controller_parameters(
         self,
-        high_soc=1.0,
-        low_soc=0.0,
+        peak_hours_utc,
+        min_soc_floor=0.0,
     ):
         """
-        Set parameters for BatteryPriceSOCController.
-
-        high_soc is the SOC threshold above which the battery will only charge if the price is below
-        the lowest (hourly) DA price of the day.  Defaults to 1.0.
-
-        low_soc is the SOC threshold below which the battery will only discharge if the price is
-        above the highest (hourly) DA price of the day.  Defaults to 0.2.
-
-        high_soc defaults to 1.0 (effectively disabled) as experience suggests waiting for
-        very low prices is not worthwhile. low_soc defaults to 0.2 as experience suggests waiting
-        for very high prices is worthwhile.
-
-        Args:
-            high_soc (float): High SOC threshold (0 to 1).  Defaults to 1.0.
-            low_soc (float): Low SOC threshold (0 to 1).  Defaults to 0.2.
+        Fill this in later...
         """
-        self.high_soc = high_soc
-        self.low_soc = low_soc
+        # peak_hours_utc must be a list of at least 1 element and no more than 24
+        if (
+            not isinstance(peak_hours_utc, list)
+            or len(peak_hours_utc) < 1
+            or len(peak_hours_utc) > 24
+        ):
+            raise ValueError(
+                "peak_hours_utc must be a list of at least 1 element and no more than 24"
+            )
+        if not all(isinstance(h, int) for h in peak_hours_utc):
+            raise ValueError("peak_hours_utc must be a list of integers")
+        if not all(h >= 0 and h < 24 for h in peak_hours_utc):
+            raise ValueError(
+                "peak_hours_utc must be a list of integers between 0 and 23"
+            )
+        self.peak_hours_utc = peak_hours_utc
+
+        # min_soc_floor must be a float between 0 and 1
+        if (
+            not isinstance(min_soc_floor, (float, int))
+            or min_soc_floor < 0
+            or min_soc_floor > 1
+        ):
+            raise ValueError("min_soc_floor must be a float between 0 and 1")
+        self.min_soc_floor = min_soc_floor
 
     def compute_controls(self, measurements_dict):
         day_ahead_lmps = np.array(measurements_dict["DA_LMP_24hours"])
@@ -284,21 +304,28 @@ class BatteryPriceSOCController(ControllerBase):
 
         # Limit the power_setpoint by the SOC
         if power_setpoint > 0:  # Trying to discharge
-            if soc <= self.plant_parameters[self.cname]["state_of_charge_min"]:  # Fully depleted
+            if (
+                soc <= self.plant_parameters[self.cname]["state_of_charge_min"]
+            ):  # Fully depleted
                 power_setpoint = 0.0
 
         # Other way
         if power_setpoint < 0:  # Trying to charge
-            if soc >= self.plant_parameters[self.cname]["state_of_charge_max"]:  # Fully charged
+            if (
+                soc >= self.plant_parameters[self.cname]["state_of_charge_max"]
+            ):  # Fully charged
                 power_setpoint = 0.0
 
         # Apply limitations based on super controller
-        power_limit_lower = measurements_dict[self.cname].get("power_limit_lower", -np.inf)
-        power_limit_upper = measurements_dict[self.cname].get("power_limit_upper", np.inf)
+        power_limit_lower = measurements_dict[self.cname].get(
+            "power_limit_lower", -np.inf
+        )
+        power_limit_upper = measurements_dict[self.cname].get(
+            "power_limit_upper", np.inf
+        )
         power_setpoint = np.clip(power_setpoint, power_limit_lower, power_limit_upper)
 
         return {self.cname: {"power_setpoint": power_setpoint}}
-
 
 
 class BatterySingleCycleController(ControllerBase):
@@ -326,95 +353,189 @@ class BatterySingleCycleController(ControllerBase):
         self.set_controller_parameters(**controller_parameters)
 
         self.rated_power_charging = self.plant_parameters[self.cname]["charge_rate"]
-        self.rated_power_discharging = self.plant_parameters[self.cname]["discharge_rate"]
+        self.rated_power_discharging = self.plant_parameters[self.cname][
+            "discharge_rate"
+        ]
+        self.min_SOC = self.plant_parameters[self.cname]["state_of_charge_min"]
+        self.max_SOC = self.plant_parameters[self.cname]["state_of_charge_max"]
+        self.roundtrip_efficiency = self.plant_parameters[self.cname][
+            "roundtrip_efficiency"
+        ]
 
-        # Save the duration rounded to nearest hour
-        self.duration = round(
-            self.plant_parameters[self.cname]["energy_capacity"]
-            / self.plant_parameters[self.cname]["power_capacity"]
+        # Compute other metrics of rte and capacity
+        self.eta_charge = np.sqrt(self.roundtrip_efficiency)
+        self.eta_discharge = np.sqrt(self.roundtrip_efficiency)
+
+        # These are the external values of the battery, not the internal values
+        self.energy_capacity = self.plant_parameters[self.cname]["energy_capacity"]
+        self.power_capacity = self.plant_parameters[self.cname]["power_capacity"]
+
+        # Compute internal energy capacity
+        # Internal energy capacity accounts for efficiency losses so that
+        # discharge duration = energy_capacity / discharge_rate regardless of RTE.
+        # energy_capacity is the user-specified deliverable energy.
+        self.internal_energy_capacity = self.energy_capacity / self.eta_discharge
+
+        # Compute the state of charge that can deliver one hour of rated power
+        self.one_hour_soc = 1 / (self.energy_capacity / self.rated_power_discharging)
+
+        # How much does soc charge in one hour at rated power?
+        self.one_hour_soc_charge = (
+            self.internal_energy_capacity / self.rated_power_charging
         )
 
-        # Raise if duration makes this controller implausible
-        if self.duration >= 12:
-            raise ValueError(
-                f"Battery duration is {self.duration} hours, which is not "
-                "supported by BatteryPriceSOCController."
-                " This controller is only intended for durations shorter than 12 hours."
-            )
+        # Save some useful keys
+        # self._lmp_da_keys = tuple(f"lmp_da_{h:02d}" for h in range(24))
+        self._hour_delta = np.arange(24)
+        self._hour_delta_timedelta = pd.to_timedelta(self._hour_delta, unit="h")
 
-        if self.duration < 1:
-            raise ValueError(
-                f"Battery duration is {self.duration} hours, which is not "
-                "supported by BatteryPriceSOCController."
-                " This controller is only intended for durations of at least 1 hour."
-            )
+        # Initialize states
+        self.charge_mode = "charge"  # 'charge' or 'discharge'
+        self.prev_hour = None
+        self.discharge_start_time = None
 
     def set_controller_parameters(
         self,
-        high_soc=1.0,
-        low_soc=0.0,
+        peak_hours_utc,
+        min_soc_controller=0.0,
     ):
         """
-        Set parameters for BatteryPriceSOCController.
-
-        high_soc is the SOC threshold above which the battery will only charge if the price is below
-        the lowest (hourly) DA price of the day.  Defaults to 1.0.
-
-        low_soc is the SOC threshold below which the battery will only discharge if the price is
-        above the highest (hourly) DA price of the day.  Defaults to 0.2.
-
-        high_soc defaults to 1.0 (effectively disabled) as experience suggests waiting for
-        very low prices is not worthwhile. low_soc defaults to 0.2 as experience suggests waiting
-        for very high prices is worthwhile.
-
-        Args:
-            high_soc (float): High SOC threshold (0 to 1).  Defaults to 1.0.
-            low_soc (float): Low SOC threshold (0 to 1).  Defaults to 0.2.
+        TBD
         """
-        self.high_soc = high_soc
-        self.low_soc = low_soc
+        # peak_hours_utc must be a list of at least 1 element and no more than 24
+        if (
+            not isinstance(peak_hours_utc, list)
+            or len(peak_hours_utc) < 1
+            or len(peak_hours_utc) > 24
+        ):
+            raise ValueError(
+                "peak_hours_utc must be a list of at least 1 element and no more than 24"
+            )
+        if not all(isinstance(h, int) for h in peak_hours_utc):
+            raise ValueError("peak_hours_utc must be a list of integers")
+        if not all(h >= 0 and h < 24 for h in peak_hours_utc):
+            raise ValueError(
+                "peak_hours_utc must be a list of integers between 0 and 23"
+            )
+        self.peak_hours_utc = peak_hours_utc
+
+        # min_soc_controller must be a float between 0 and 1
+        if (
+            not isinstance(min_soc_controller, (float, int))
+            or min_soc_controller < 0
+            or min_soc_controller > 1
+        ):
+            raise ValueError("min_soc_controller must be a float between 0 and 1")
+        self.min_soc_controller = min_soc_controller
 
     def compute_controls(self, measurements_dict):
-        day_ahead_lmps = np.array(measurements_dict["DA_LMP_24hours"])
-        sorted_day_ahead_lmps = np.sort(day_ahead_lmps)
-        real_time_lmp = measurements_dict["RT_LMP"]
+        # Get time information
+        time_utc = measurements_dict["time_utc"]
+        current_hour = time_utc.floor("H")
 
-        # Extract limits
-        bottom_d = sorted_day_ahead_lmps[self.duration - 1]
-        top_d = sorted_day_ahead_lmps[-self.duration]
-        bottom_1 = sorted_day_ahead_lmps[0]
-        top_1 = sorted_day_ahead_lmps[-1]
+        # print("TIME UTC:", time_utc)
+        # print("DISCHARGE START TIME:", self.discharge_start_time)
+        # print("CHARGE MODE:", self.charge_mode)
 
-        # Access the state of charge and LMP in real-time
+        # If first time step set the prev_hour to be the previous hour
+        if self.prev_hour is None:
+            self.prev_hour = current_hour - pd.Timedelta(hours=1)
+
+        # If first time step set the discharge_start_time to be the peak
+        # hour from the set of peak_hours_utc
+        if self.discharge_start_time is None:
+            # TBD (place holder for now)
+            self.discharge_start_time = current_hour
+
+        # Get the state of charge
         soc = measurements_dict[self.cname]["state_of_charge"]
 
-        # Note that the convention is followed where charging is negative power
-        # This matches what is in place in the hercules/hybrid_plant level and
-        # will be inverted before passing into the battery modules
-        if real_time_lmp > top_1:
-            power_setpoint = self.rated_power_discharging
-        elif (real_time_lmp > top_d) & (soc > self.low_soc):
-            power_setpoint = self.rated_power_discharging
-        elif real_time_lmp < bottom_1:
-            power_setpoint = -self.rated_power_charging
-        elif (real_time_lmp < bottom_d) & (soc < self.high_soc):
-            power_setpoint = -self.rated_power_charging
+        # If in discharge mode and current_hour >= discharge_start_time,
+        if self.charge_mode == "discharge":
+            # If past the discharge start time, switch to charge mode
+            if current_hour >= self.discharge_start_time:
+                self.pow_setpoint = self.rated_power_discharging
+            else:
+                self.pow_setpoint = 0.0
+
+            if soc <= self.min_soc_controller:
+                self.pow_setpoint = 0.0
+                self.charge_mode = "charge"
+
+        # Else in charge mode
         else:
-            power_setpoint = 0.0
+            # If fully charged, switch to discharge mode
+            if soc >= self.max_SOC:
+                self.pow_setpoint = 0.0
+                self.charge_mode = "discharge"
 
-        # Limit the power_setpoint by the SOC
-        if power_setpoint > 0:  # Trying to discharge
-            if soc <= self.plant_parameters[self.cname]["state_of_charge_min"]:  # Fully depleted
-                power_setpoint = 0.0
+            # Don't do anything if hour hasn't changed
+            elif current_hour == self.prev_hour:
+                pass
 
-        # Other way
-        if power_setpoint < 0:  # Trying to charge
-            if soc >= self.plant_parameters[self.cname]["state_of_charge_max"]:  # Fully charged
-                power_setpoint = 0.0
+            else:
+                # Get the upcoming lmp prices and current lmp
+                day_ahead_lmps = np.array(measurements_dict["DA_LMP_24hours"])
+                current_da_lmp = measurements_dict["DA_LMP"]
+
+                # If SOC is below the one hour SOC, charge so long as below the median price of all hours
+                # Get the median of all prices
+                median_price_all_hours = np.median(day_ahead_lmps)
+
+                # Have many hours do we need to charge to be full again (round up)?
+                n_hours_to_full = int(
+                    np.ceil((self.max_SOC - soc) / self.one_hour_soc_charge)
+                )
+
+                # Get an array of hours
+                hour_times = current_hour + self._hour_delta_timedelta
+                hours = hour_times.hour.values
+
+                # Get the indices of hours that are in the peak hours as an array of ints
+                peak_hour_indices = np.where(np.isin(hours, self.peak_hours_utc))[0]
+
+                # If 0 and 23 are included in peak_hour_indices,
+                if 0 in peak_hour_indices and 23 in peak_hour_indices:
+                    # Keep only values > 12
+                    peak_hour_indices = peak_hour_indices[peak_hour_indices > 12]
+
+                # Of these which has the highest day-ahead LMPs, set as the discharge start time
+                peak_hour_lmps = np.array(day_ahead_lmps)[peak_hour_indices]
+                max_peak_hour_lmp_index = np.argmax(peak_hour_lmps)
+                self.discharge_start_time = hour_times[peak_hour_indices][
+                    max_peak_hour_lmp_index
+                ]
+
+                # Get a list of LMP values before the discharge start time
+                lmp_before_discharge = sorted(
+                    np.array(day_ahead_lmps)[hour_times <= self.discharge_start_time]
+                )
+
+                # If the n_hours_to_full > length of lmp_before_discharge, charge
+                if n_hours_to_full >= len(lmp_before_discharge):
+                    self.pow_setpoint = -self.rated_power_charging
+                # Charge if the current price is below the price of the n_hours_to_full - 1 element of lmp_before_discharge
+                elif current_da_lmp <= lmp_before_discharge[n_hours_to_full - 1]:
+                    self.pow_setpoint = -self.rated_power_charging
+                else:  # wait
+                    self.pow_setpoint = 0.0
+
+                # # Force charging if SOC is below the one hour SOC and current DA LMP is below the median price of all hours
+                # if soc < self.one_hour_soc and current_da_lmp < median_price_all_hours:
+                #     self.pow_setpoint = -self.rated_power_charging
+
+        # Update states
+        self.prev_hour = current_hour
 
         # Apply limitations based on super controller
-        power_limit_lower = measurements_dict[self.cname].get("power_limit_lower", -np.inf)
-        power_limit_upper = measurements_dict[self.cname].get("power_limit_upper", np.inf)
-        power_setpoint = np.clip(power_setpoint, power_limit_lower, power_limit_upper)
+        power_limit_lower = measurements_dict[self.cname].get(
+            "power_limit_lower", -np.inf
+        )
+        power_limit_upper = measurements_dict[self.cname].get(
+            "power_limit_upper", np.inf
+        )
+        self.pow_setpoint = np.clip(
+            self.pow_setpoint, power_limit_lower, power_limit_upper
+        )
 
-        return {self.cname: {"power_setpoint": power_setpoint}}
+        return {self.cname: {"power_setpoint": self.pow_setpoint}}
