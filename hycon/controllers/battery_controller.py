@@ -215,9 +215,7 @@ class BatteryPriceSOCController(ControllerBase):
         self.set_controller_parameters(**controller_parameters)
 
         self.rated_power_charging = self.plant_parameters[self.cname]["charge_rate"]
-        self.rated_power_discharging = self.plant_parameters[self.cname][
-            "discharge_rate"
-        ]
+        self.rated_power_discharging = self.plant_parameters[self.cname]["discharge_rate"]
 
         # Save the duration rounded to nearest hour
         self.duration = round(
@@ -242,37 +240,28 @@ class BatteryPriceSOCController(ControllerBase):
 
     def set_controller_parameters(
         self,
-        peak_hours_utc,
-        min_soc_floor=0.0,
+        high_soc=1.0,
+        low_soc=0.0,
     ):
         """
-        Fill this in later...
-        """
-        # peak_hours_utc must be a list of at least 1 element and no more than 24
-        if (
-            not isinstance(peak_hours_utc, list)
-            or len(peak_hours_utc) < 1
-            or len(peak_hours_utc) > 24
-        ):
-            raise ValueError(
-                "peak_hours_utc must be a list of at least 1 element and no more than 24"
-            )
-        if not all(isinstance(h, int) for h in peak_hours_utc):
-            raise ValueError("peak_hours_utc must be a list of integers")
-        if not all(h >= 0 and h < 24 for h in peak_hours_utc):
-            raise ValueError(
-                "peak_hours_utc must be a list of integers between 0 and 23"
-            )
-        self.peak_hours_utc = peak_hours_utc
+        Set parameters for BatteryPriceSOCController.
 
-        # min_soc_floor must be a float between 0 and 1
-        if (
-            not isinstance(min_soc_floor, (float, int))
-            or min_soc_floor < 0
-            or min_soc_floor > 1
-        ):
-            raise ValueError("min_soc_floor must be a float between 0 and 1")
-        self.min_soc_floor = min_soc_floor
+        high_soc is the SOC threshold above which the battery will only charge if the price is below
+        the lowest (hourly) DA price of the day.  Defaults to 1.0.
+
+        low_soc is the SOC threshold below which the battery will only discharge if the price is
+        above the highest (hourly) DA price of the day.  Defaults to 0.2.
+
+        high_soc defaults to 1.0 (effectively disabled) as experience suggests waiting for
+        very low prices is not worthwhile. low_soc defaults to 0.2 as experience suggests waiting
+        for very high prices is worthwhile.
+
+        Args:
+            high_soc (float): High SOC threshold (0 to 1).  Defaults to 1.0.
+            low_soc (float): Low SOC threshold (0 to 1).  Defaults to 0.2.
+        """
+        self.high_soc = high_soc
+        self.low_soc = low_soc
 
     def compute_controls(self, measurements_dict):
         day_ahead_lmps = np.array(measurements_dict["DA_LMP_24hours"])
@@ -304,25 +293,17 @@ class BatteryPriceSOCController(ControllerBase):
 
         # Limit the power_setpoint by the SOC
         if power_setpoint > 0:  # Trying to discharge
-            if (
-                soc <= self.plant_parameters[self.cname]["state_of_charge_min"]
-            ):  # Fully depleted
+            if soc <= self.plant_parameters[self.cname]["state_of_charge_min"]:  # Fully depleted
                 power_setpoint = 0.0
 
         # Other way
         if power_setpoint < 0:  # Trying to charge
-            if (
-                soc >= self.plant_parameters[self.cname]["state_of_charge_max"]
-            ):  # Fully charged
+            if soc >= self.plant_parameters[self.cname]["state_of_charge_max"]:  # Fully charged
                 power_setpoint = 0.0
 
         # Apply limitations based on super controller
-        power_limit_lower = measurements_dict[self.cname].get(
-            "power_limit_lower", -np.inf
-        )
-        power_limit_upper = measurements_dict[self.cname].get(
-            "power_limit_upper", np.inf
-        )
+        power_limit_lower = measurements_dict[self.cname].get("power_limit_lower", -np.inf)
+        power_limit_upper = measurements_dict[self.cname].get("power_limit_upper", np.inf)
         power_setpoint = np.clip(power_setpoint, power_limit_lower, power_limit_upper)
 
         return {self.cname: {"power_setpoint": power_setpoint}}
