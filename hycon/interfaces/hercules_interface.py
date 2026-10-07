@@ -91,6 +91,15 @@ class HerculesInterface(InterfaceBase):
             "power_setpoint",
         ]
 
+        # Allow other keys needed for new controllers
+        available_controls.extend([
+            "charge_price",
+            "rt_offer_price",
+            "da_offer_price",
+            "rt_available",
+            "in_peak",
+        ])
+
         # Check valid control keys _for each component_ on the hybrid plant
         for c in controls_dict.keys():
             for k in controls_dict[c].keys():
