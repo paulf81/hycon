@@ -343,26 +343,17 @@ class BatterySingleCycleController(ControllerBase):
             "roundtrip_efficiency"
         ]
 
-        # Compute other metrics of rte and capacity
-        self.eta_charge = np.sqrt(self.roundtrip_efficiency)
-        self.eta_discharge = np.sqrt(self.roundtrip_efficiency)
-
-        # These are the external values of the battery, not the internal values
+        # Deliverable (discharge-side) energy at the terminals
         self.energy_capacity = self.plant_parameters[self.cname]["energy_capacity"]
         self.power_capacity = self.plant_parameters[self.cname]["power_capacity"]
 
-        # Compute internal energy capacity
-        # Internal energy capacity accounts for efficiency losses so that
-        # discharge duration = energy_capacity / discharge_rate regardless of RTE.
-        # energy_capacity is the user-specified deliverable energy.
-        self.internal_energy_capacity = self.energy_capacity / self.eta_discharge
-
         # Compute the state of charge that can deliver one hour of rated power
-        self.one_hour_soc = 1 / (self.energy_capacity / self.rated_power_discharging)
+        self.one_hour_soc = self.rated_power_discharging / self.energy_capacity
 
-        # How much does soc charge in one hour at rated power?
+        # SOC gained in one hour at rated charge power; all round-trip losses
+        # apply since energy_capacity is deliverable energy.
         self.one_hour_soc_charge = (
-            self.internal_energy_capacity / self.rated_power_charging
+            self.roundtrip_efficiency * self.rated_power_charging / self.energy_capacity
         )
 
         # Save some useful keys
